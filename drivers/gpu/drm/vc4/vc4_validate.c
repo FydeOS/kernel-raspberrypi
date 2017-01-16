@@ -862,6 +862,16 @@ validate_gl_shader_rec(struct drm_device *dev,
 			}
 		}
 
+		/* Track which stages are doing texturing, for the
+		 * texture cache flush workaround.
+		 */
+		if (validated_shader->num_texture_samples != 0) {
+			if (i == 0)
+				exec->texturing_fs = true;
+			else
+				exec->texturing_vs = true;
+		}
+
 		/* Fill in the uniform slots that need this shader's
 		 * start-of-uniforms address (used for resetting the uniform
 		 * stream in the presence of control flow).

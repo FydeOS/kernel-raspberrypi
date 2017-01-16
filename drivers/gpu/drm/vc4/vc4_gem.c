@@ -409,10 +409,25 @@ vc4_flush_caches(struct drm_device *dev)
 		  V3D_L2CACTL_L2CCLR);
 
 	V3D_WRITE(V3D_SLCACTL,
-		  VC4_SET_FIELD(0xf, V3D_SLCACTL_T1CC) |
-		  VC4_SET_FIELD(0xf, V3D_SLCACTL_T0CC) |
 		  VC4_SET_FIELD(0xf, V3D_SLCACTL_UCC) |
 		  VC4_SET_FIELD(0xf, V3D_SLCACTL_ICC));
+}
+
+/**
+ * Flush the VC4 texture caches.
+ *
+ * HW2422: There is a bug in the texture cache where a flush while the
+ * texture unit is active may return bad results, so this should only
+ * happen while both bin and render are not doing any texturing.
+ */
+void
+vc4_flush_texture_cache(struct drm_device *dev)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(dev);
+
+	V3D_WRITE(V3D_SLCACTL,
+		  VC4_SET_FIELD(0xf, V3D_SLCACTL_T1CC) |
+		  VC4_SET_FIELD(0xf, V3D_SLCACTL_T0CC));
 }
 
 /* Sets the registers for the next job to be actually be executed in
@@ -425,18 +440,39 @@ vc4_submit_next_bin_job(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_exec_info *exec;
+	struct vc4_exec_info *render = vc4_first_render_job(vc4);
+	bool tc_flushed = false;
+
+	if (render && render->blocked_on_texture_flush) {
+		vc4_flush_texture_cache(dev);
+		tc_flushed = true;
+
+		submit_cl(dev, 1, render->ct1ca, render->ct1ea);
+		render->blocked_on_texture_flush = false;
+	}
 
 again:
 	exec = vc4_first_bin_job(vc4);
 	if (!exec)
 		return;
 
-	vc4_flush_caches(dev);
-
 	/* Either put the job in the binner if it uses the binner, or
 	 * immediately move it to the to-be-rendered queue.
 	 */
 	if (exec->ct0ca != exec->ct0ea) {
+		/* If we're texturing during binning then we need to
+		 * wait until a render job doing texturing drains,
+		 * so we can flush the texture cache.
+		 */
+		if (exec->texturing_vs && !tc_flushed) {
+			if (render && (render->texturing_vs ||
+				       render->texturing_fs)) {
+				exec->blocked_on_texture_flush = true;
+				return;
+			}
+			vc4_flush_texture_cache(dev);
+		}
+
 		submit_cl(dev, 0, exec->ct0ca, exec->ct0ea);
 	} else {
 		vc4_move_job_to_render(dev, exec);
@@ -449,9 +485,32 @@ vc4_submit_next_render_job(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_exec_info *exec = vc4_first_render_job(vc4);
+	struct vc4_exec_info *bin = vc4_first_bin_job(vc4);
+	bool tc_flushed = false;
+
+	if (bin && bin->blocked_on_texture_flush) {
+		vc4_flush_texture_cache(dev);
+		tc_flushed = true;
+
+		submit_cl(dev, 0, bin->ct0ca, bin->ct0ea);
+		bin->blocked_on_texture_flush = false;
+	}
 
 	if (!exec)
 		return;
+
+	/* If we're texturing during rendering then we need to wait
+	 * until a bin job doing texturing drains, so we can flush the
+	 * texture cache (but we don't need to flush now if we already
+	 * flushed at bin time).
+	 */
+	if (exec->texturing_fs && !exec->texturing_vs && !tc_flushed) {
+		if (bin && bin->texturing_vs) {
+			exec->blocked_on_texture_flush = true;
+			return;
+		}
+		vc4_flush_texture_cache(dev);
+	}
 
 	submit_cl(dev, 1, exec->ct1ca, exec->ct1ea);
 }
@@ -517,6 +576,7 @@ vc4_queue_submit(struct drm_device *dev, struct vc4_exec_info *exec)
 	 * occurs.
 	 */
 	if (vc4_first_bin_job(vc4) == exec) {
+		vc4_flush_caches(dev);
 		vc4_submit_next_bin_job(dev);
 		vc4_queue_hangcheck(dev);
 	}

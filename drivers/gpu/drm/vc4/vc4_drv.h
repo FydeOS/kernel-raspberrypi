@@ -296,6 +296,10 @@ struct vc4_exec_info {
 	bool found_start_tile_binning_packet;
 	bool found_increment_semaphore_packet;
 	bool found_flush;
+	bool texturing_fs;
+	bool texturing_vs;
+	bool blocked_on_texture_flush;
+
 	uint8_t bin_tiles_x, bin_tiles_y;
 	struct drm_gem_cma_object *tile_bo;
 	uint32_t tile_alloc_offset;
