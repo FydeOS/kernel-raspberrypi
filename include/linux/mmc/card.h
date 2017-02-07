@@ -285,6 +285,9 @@ struct mmc_card {
 /* Chromium specifc quirk for Hynix EMMC */
 #define MMC_QUIRK_NOTIFY_POWEROFF_ON_SLEEP  (1<<13) /* Poweroff notification*/
 
+#define MMC_QUIRK_ERASE_BROKEN	(1<<31)		/* Skip erase */
+
+
 	unsigned int		erase_size;	/* erase size in sectors */
  	unsigned int		erase_shift;	/* if erase unit is power 2 */
  	unsigned int		pref_erase;	/* in sectors */

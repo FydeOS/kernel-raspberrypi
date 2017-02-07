@@ -66,9 +66,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_ES8328_SPI if SPI_MASTER
 	select SND_SOC_ES8328_I2C if I2C
 	select SND_SOC_GTM601
-	select SND_SOC_HDAC_HDMI
 	select SND_SOC_ICS43432
-	select SND_SOC_INNO_RK3036
 	select SND_SOC_ISABELLE if I2C
 	select SND_SOC_JZ4740_CODEC
 	select SND_SOC_LM4857 if I2C
@@ -84,7 +82,6 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_MC13783 if MFD_MC13XXX
 	select SND_SOC_ML26124 if I2C
 	select SND_SOC_NAU8825 if I2C
-	select SND_SOC_HDMI_CODEC
 	select SND_SOC_PCM1681 if I2C
 	select SND_SOC_PCM1792A if SPI_MASTER
 	select SND_SOC_PCM3008
@@ -92,8 +89,8 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_PCM512x_SPI if SPI_MASTER
 	select SND_SOC_RT286 if I2C
 	select SND_SOC_RT298 if I2C
-	select SND_SOC_RT5514 if I2C
-	select SND_SOC_RT5616 if I2C
+	select SND_SOC_PCM5102A if I2C
+	select SND_SOC_PCM1794A if I2C
 	select SND_SOC_RT5631 if I2C
 	select SND_SOC_RT5640 if I2C
 	select SND_SOC_RT5645 if I2C
@@ -121,6 +118,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_TFA9879 if I2C
 	select SND_SOC_TLV320AIC23_I2C if I2C
 	select SND_SOC_TLV320AIC23_SPI if SPI_MASTER
+	select SND_SOC_TAS5713 if I2C
 	select SND_SOC_TLV320AIC26 if SPI_MASTER
 	select SND_SOC_TLV320AIC31XX if I2C
 	select SND_SOC_TLV320AIC32X4 if I2C
@@ -460,13 +458,6 @@ config SND_SOC_BT_SCO
 config SND_SOC_DMIC
 	tristate
 
-config SND_SOC_HDMI_CODEC
-	tristate
-	select HDMI_NOTIFIERS
-	select SND_PCM_ELD
-	select SND_PCM_IEC958
-	select HDMI
-
 config SND_SOC_ES8328
 	tristate "Everest Semi ES8328 CODEC"
 
@@ -481,18 +472,8 @@ config SND_SOC_ES8328_SPI
 config SND_SOC_GTM601
 	tristate 'GTM601 UMTS modem audio codec'
 
-config SND_SOC_HDAC_HDMI
-	tristate
-	select SND_HDA_EXT_CORE
-	select SND_PCM_ELD
-	select HDMI
-
 config SND_SOC_ICS43432
 	tristate
-
-config SND_SOC_INNO_RK3036
-	tristate "Inno codec driver for RK3036 SoC"
-	select REGMAP_MMIO
 
 config SND_SOC_ISABELLE
         tristate
@@ -579,14 +560,17 @@ config SND_SOC_RT298
 	tristate
 	depends on I2C
 
-config SND_SOC_RT5514
+config SND_SOC_RT298
 	tristate
+	depends on I2C
 
-config SND_SOC_RT5514_SPI
+config SND_SOC_PCM1794A
 	tristate
+	depends on I2C
 
-config SND_SOC_RT5616
+config SND_SOC_PCM5102A
 	tristate
+	depends on I2C
 
 config SND_SOC_RT5631
 	tristate "Realtek ALC5631/RT5631 CODEC"
@@ -701,6 +685,9 @@ config SND_SOC_TAS571X
 config SND_SOC_TFA9879
 	tristate "NXP Semiconductors TFA9879 amplifier"
 	depends on I2C
+
+config SND_SOC_TAS5713
+	tristate
 
 config SND_SOC_TLV320AIC23
 	tristate

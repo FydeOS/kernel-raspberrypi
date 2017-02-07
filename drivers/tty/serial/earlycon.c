@@ -19,8 +19,7 @@
 #include <linux/io.h>
 #include <linux/serial_core.h>
 #include <linux/sizes.h>
-#include <linux/of.h>
-#include <linux/of_fdt.h>
+#include <linux/mod_devicetable.h>
 
 #ifdef CONFIG_FIX_EARLYCON_MEM
 #include <asm/fixmap.h>
@@ -37,6 +36,13 @@ static struct console early_con = {
 static struct earlycon_device early_console_dev = {
 	.con = &early_con,
 };
+
+extern struct earlycon_id __earlycon_table[];
+static const struct earlycon_id __earlycon_table_sentinel
+	__used __section(__earlycon_table_end);
+
+static const struct of_device_id __earlycon_of_table_sentinel
+	__used __section(__earlycon_of_table_end);
 
 static void __iomem * __init earlycon_map(unsigned long paddr, size_t size)
 {
@@ -179,7 +185,7 @@ int __init setup_earlycon(char *buf)
 	if (early_con.flags & CON_ENABLED)
 		return -EALREADY;
 
-	for (match = __earlycon_table; match < __earlycon_table_end; match++) {
+	for (match = __earlycon_table; match->name[0]; match++) {
 		size_t len = strlen(match->name);
 
 		if (strncmp(buf, match->name, len))
@@ -219,60 +225,20 @@ early_param("earlycon", param_setup_earlycon);
 
 #ifdef CONFIG_OF_EARLY_FLATTREE
 
-int __init of_setup_earlycon(const struct earlycon_id *match,
-			     unsigned long node,
-			     const char *options)
+int __init of_setup_earlycon(unsigned long addr,
+			     int (*setup)(struct earlycon_device *, const char *))
 {
 	int err;
 	struct uart_port *port = &early_console_dev.port;
-	const __be32 *val;
-	bool big_endian;
-	u64 addr;
 
 	spin_lock_init(&port->lock);
 	port->iotype = UPIO_MEM;
-	addr = of_flat_dt_translate_address(node);
-	if (addr == OF_BAD_ADDR) {
-		pr_warn("[%s] bad address\n", match->name);
-		return -ENXIO;
-	}
 	port->mapbase = addr;
 	port->uartclk = BASE_BAUD * 16;
-	port->membase = earlycon_map(port->mapbase, SZ_4K);
+	port->membase = earlycon_map(addr, SZ_4K);
 
-	val = of_get_flat_dt_prop(node, "reg-offset", NULL);
-	if (val)
-		port->mapbase += be32_to_cpu(*val);
-	val = of_get_flat_dt_prop(node, "reg-shift", NULL);
-	if (val)
-		port->regshift = be32_to_cpu(*val);
-	big_endian = of_get_flat_dt_prop(node, "big-endian", NULL) != NULL ||
-		(IS_ENABLED(CONFIG_CPU_BIG_ENDIAN) &&
-		 of_get_flat_dt_prop(node, "native-endian", NULL) != NULL);
-	val = of_get_flat_dt_prop(node, "reg-io-width", NULL);
-	if (val) {
-		switch (be32_to_cpu(*val)) {
-		case 1:
-			port->iotype = UPIO_MEM;
-			break;
-		case 2:
-			port->iotype = UPIO_MEM16;
-			break;
-		case 4:
-			port->iotype = (big_endian) ? UPIO_MEM32BE : UPIO_MEM32;
-			break;
-		default:
-			pr_warn("[%s] unsupported reg-io-width\n", match->name);
-			return -EINVAL;
-		}
-	}
-
-	if (options) {
-		strlcpy(early_console_dev.options, options,
-			sizeof(early_console_dev.options));
-	}
-	earlycon_init(&early_console_dev, match->name);
-	err = match->setup(&early_console_dev, options);
+	early_console_dev.con->data = &early_console_dev;
+	err = setup(&early_console_dev, NULL);
 	if (err < 0)
 		return err;
 	if (!early_console_dev.con->write)

@@ -19,6 +19,7 @@
  */
 
 #include "vc4_drv.h"
+#include "uapi/drm/vc4_drm.h"
 
 static void vc4_bo_stats_dump(struct vc4_dev *vc4)
 {
@@ -77,6 +78,12 @@ static void vc4_bo_destroy(struct vc4_bo *bo)
 {
 	struct drm_gem_object *obj = &bo->base.base;
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
+
+	if (bo->validated_shader) {
+		kfree(bo->validated_shader->texture_samples);
+		kfree(bo->validated_shader);
+		bo->validated_shader = NULL;
+	}
 
 	vc4->bo_stats.num_allocated--;
 	vc4->bo_stats.size_allocated -= obj->size;
@@ -206,9 +213,10 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	size_t size = roundup(unaligned_size, PAGE_SIZE);
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct drm_gem_cma_object *cma_obj;
+	int pass, ret;
 
 	if (size == 0)
-		return NULL;
+		return ERR_PTR(-EINVAL);
 
 	/* First, try to get a vc4_bo from the kernel BO cache. */
 	if (from_cache) {
@@ -218,19 +226,38 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 			return bo;
 	}
 
-	cma_obj = drm_gem_cma_create(dev, size);
-	if (IS_ERR(cma_obj)) {
-		/*
-		 * If we've run out of CMA memory, kill the cache of
-		 * CMA allocations we've got laying around and try again.
-		 */
-		vc4_bo_cache_purge(dev);
-
+	/* Otherwise, make a new BO. */
+	for (pass = 0; ; pass++) {
 		cma_obj = drm_gem_cma_create(dev, size);
-		if (IS_ERR(cma_obj)) {
+		if (!IS_ERR(cma_obj))
+			break;
+
+		switch (pass) {
+		case 0:
+			/*
+			 * If we've run out of CMA memory, kill the cache of
+			 * CMA allocations we've got laying around and try again.
+			 */
+			vc4_bo_cache_purge(dev);
+			break;
+		case 1:
+			/*
+			 * Getting desperate, so try to wait for any
+			 * previous rendering to finish, free its
+			 * unreferenced BOs to the cache, and then
+			 * free the cache.
+			 */
+			ret = vc4_wait_for_seqno(dev, vc4->emit_seqno, ~0ull,
+						 true);
+			if (ret)
+				return ERR_PTR(ret);
+			vc4_job_handle_completed(vc4);
+			vc4_bo_cache_purge(dev);
+			break;
+		case 3:
 			DRM_ERROR("Failed to allocate from CMA:\n");
 			vc4_bo_stats_dump(vc4);
-			return NULL;
+			return ERR_PTR(-ENOMEM);
 		}
 	}
 
@@ -252,8 +279,8 @@ int vc4_dumb_create(struct drm_file *file_priv,
 		args->size = args->pitch * args->height;
 
 	bo = vc4_bo_create(dev, args->size, false);
-	if (!bo)
-		return -ENOMEM;
+	if (IS_ERR(bo))
+		return PTR_ERR(bo);
 
 	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
 	drm_gem_object_unreference_unlocked(&bo->base.base);
@@ -284,8 +311,6 @@ static void vc4_bo_cache_free_old(struct drm_device *dev)
 
 /* Called on the last userspace/kernel unreference of the BO.  Returns
  * it to the BO cache if possible, otherwise frees it.
- *
- * Note that this is called with the struct_mutex held.
  */
 void vc4_free_object(struct drm_gem_object *gem_bo)
 {
@@ -312,6 +337,12 @@ void vc4_free_object(struct drm_gem_object *gem_bo)
 	if (!cache_list) {
 		vc4_bo_destroy(bo);
 		goto out;
+	}
+
+	if (bo->validated_shader) {
+		kfree(bo->validated_shader->texture_samples);
+		kfree(bo->validated_shader);
+		bo->validated_shader = NULL;
 	}
 
 	bo->free_time = jiffies;
@@ -344,6 +375,175 @@ static void vc4_bo_cache_time_timer(unsigned long data)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 
 	schedule_work(&vc4->bo_cache.time_work);
+}
+
+struct dma_buf *
+vc4_prime_export(struct drm_device *dev, struct drm_gem_object *obj, int flags)
+{
+	struct vc4_bo *bo = to_vc4_bo(obj);
+
+	if (bo->validated_shader) {
+		DRM_ERROR("Attempting to export shader BO\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	return drm_gem_prime_export(dev, obj, flags);
+}
+
+int vc4_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct drm_gem_object *gem_obj;
+	struct vc4_bo *bo;
+	int ret;
+
+	ret = drm_gem_mmap(filp, vma);
+	if (ret)
+		return ret;
+
+	gem_obj = vma->vm_private_data;
+	bo = to_vc4_bo(gem_obj);
+
+	if (bo->validated_shader && (vma->vm_flags & VM_WRITE)) {
+		DRM_ERROR("mmaping of shader BOs for writing not allowed.\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * Clear the VM_PFNMAP flag that was set by drm_gem_mmap(), and set the
+	 * vm_pgoff (used as a fake buffer offset by DRM) to 0 as we want to map
+	 * the whole buffer.
+	 */
+	vma->vm_flags &= ~VM_PFNMAP;
+	vma->vm_pgoff = 0;
+
+	ret = dma_mmap_writecombine(bo->base.base.dev->dev, vma,
+				    bo->base.vaddr, bo->base.paddr,
+				    vma->vm_end - vma->vm_start);
+	if (ret)
+		drm_gem_vm_close(vma);
+
+	return ret;
+}
+
+int vc4_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
+{
+	struct vc4_bo *bo = to_vc4_bo(obj);
+
+	if (bo->validated_shader && (vma->vm_flags & VM_WRITE)) {
+		DRM_ERROR("mmaping of shader BOs for writing not allowed.\n");
+		return -EINVAL;
+	}
+
+	return drm_gem_cma_prime_mmap(obj, vma);
+}
+
+void *vc4_prime_vmap(struct drm_gem_object *obj)
+{
+	struct vc4_bo *bo = to_vc4_bo(obj);
+
+	if (bo->validated_shader) {
+		DRM_ERROR("mmaping of shader BOs not allowed.\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	return drm_gem_cma_prime_vmap(obj);
+}
+
+int vc4_create_bo_ioctl(struct drm_device *dev, void *data,
+			struct drm_file *file_priv)
+{
+	struct drm_vc4_create_bo *args = data;
+	struct vc4_bo *bo = NULL;
+	int ret;
+
+	/*
+	 * We can't allocate from the BO cache, because the BOs don't
+	 * get zeroed, and that might leak data between users.
+	 */
+	bo = vc4_bo_create(dev, args->size, false);
+	if (IS_ERR(bo))
+		return PTR_ERR(bo);
+
+	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
+	drm_gem_object_unreference_unlocked(&bo->base.base);
+
+	return ret;
+}
+
+int vc4_mmap_bo_ioctl(struct drm_device *dev, void *data,
+		      struct drm_file *file_priv)
+{
+	struct drm_vc4_mmap_bo *args = data;
+	struct drm_gem_object *gem_obj;
+
+	gem_obj = drm_gem_object_lookup(dev, file_priv, args->handle);
+	if (!gem_obj) {
+		DRM_ERROR("Failed to look up GEM BO %d\n", args->handle);
+		return -EINVAL;
+	}
+
+	/* The mmap offset was set up at BO allocation time. */
+	args->offset = drm_vma_node_offset_addr(&gem_obj->vma_node);
+
+	drm_gem_object_unreference_unlocked(gem_obj);
+	return 0;
+}
+
+int
+vc4_create_shader_bo_ioctl(struct drm_device *dev, void *data,
+			   struct drm_file *file_priv)
+{
+	struct drm_vc4_create_shader_bo *args = data;
+	struct vc4_bo *bo = NULL;
+	int ret;
+
+	if (args->size == 0)
+		return -EINVAL;
+
+	if (args->size % sizeof(u64) != 0)
+		return -EINVAL;
+
+	if (args->flags != 0) {
+		DRM_INFO("Unknown flags set: 0x%08x\n", args->flags);
+		return -EINVAL;
+	}
+
+	if (args->pad != 0) {
+		DRM_INFO("Pad set: 0x%08x\n", args->pad);
+		return -EINVAL;
+	}
+
+	bo = vc4_bo_create(dev, args->size, true);
+	if (IS_ERR(bo))
+		return PTR_ERR(bo);
+
+	if (copy_from_user(bo->base.vaddr,
+			     (void __user *)(uintptr_t)args->data,
+			     args->size)) {
+		ret = -EFAULT;
+		goto fail;
+	}
+	/* Clear the rest of the memory from allocating from the BO
+	 * cache.
+	 */
+	memset(bo->base.vaddr + args->size, 0,
+	       bo->base.base.size - args->size);
+
+	bo->validated_shader = vc4_validate_shader(&bo->base);
+	if (!bo->validated_shader) {
+		ret = -EINVAL;
+		goto fail;
+	}
+
+	/* We have to create the handle after validation, to avoid
+	 * races for users to do doing things like mmap the shader BO.
+	 */
+	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
+
+ fail:
+	drm_gem_object_unreference_unlocked(&bo->base.base);
+
+	return ret;
 }
 
 void vc4_bo_cache_init(struct drm_device *dev)

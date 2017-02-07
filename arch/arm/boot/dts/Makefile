@@ -1,5 +1,24 @@
 ifeq ($(CONFIG_OF),y)
 
+dtb-$(CONFIG_ARCH_BCM2708) += bcm2708-rpi-b.dtb
+dtb-$(CONFIG_ARCH_BCM2708) += bcm2708-rpi-b-plus.dtb
+dtb-$(CONFIG_ARCH_BCM2708) += bcm2708-rpi-cm.dtb
+dtb-$(CONFIG_ARCH_BCM2835) += bcm2835-rpi-cm.dtb
+dtb-$(CONFIG_ARCH_BCM2709) += bcm2709-rpi-2-b.dtb
+dtb-$(CONFIG_ARCH_BCM2709) += bcm2710-rpi-3-b.dtb
+dtb-$(CONFIG_ARCH_BCM2709) += bcm2710-rpi-cm3.dtb
+
+# Raspberry Pi
+ifeq ($(CONFIG_ARCH_BCM2708),y)
+   RPI_DT_OVERLAYS=y
+endif
+ifeq ($(CONFIG_ARCH_BCM2709),y)
+   RPI_DT_OVERLAYS=y
+endif
+ifeq ($(CONFIG_ARCH_BCM2835),y)
+   RPI_DT_OVERLAYS=y
+endif
+
 dtb-$(CONFIG_ARCH_ALPINE) += \
 	alpine-db.dtb
 dtb-$(CONFIG_MACH_ASM9260) += \
@@ -512,13 +531,10 @@ dtb-$(CONFIG_ARCH_QCOM) += \
 dtb-$(CONFIG_ARCH_REALVIEW) += \
 	arm-realview-pb1176.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += \
-	rk3036-evb.dtb \
-	rk3036-kylin.dtb \
 	rk3066a-bqcurie2.dtb \
 	rk3066a-marsboard.dtb \
 	rk3066a-rayeager.dtb \
 	rk3188-radxarock.dtb \
-	rk3228-evb.dtb \
 	rk3288-evb-act8846.dtb \
 	rk3288-evb-rk808.dtb \
 	rk3288-firefly-beta.dtb \
@@ -526,10 +542,8 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += \
 	rk3288-popmetal.dtb \
 	rk3288-r89.dtb \
 	rk3288-rock2-square.dtb \
-	rk3288-veyron-brain.dtb \
 	rk3288-veyron-jaq.dtb \
 	rk3288-veyron-jerry.dtb \
-	rk3288-veyron-mickey.dtb \
 	rk3288-veyron-minnie.dtb \
 	rk3288-veyron-pinky.dtb \
 	rk3288-veyron-speedy.dtb
@@ -782,20 +796,21 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += \
 	mt8127-moose.dtb \
 	mt8135-evbp1.dtb
 dtb-$(CONFIG_ARCH_ZX) += zx296702-ad1.dtb
+
+targets += dtbs dtbs_install
+targets += $(dtb-y)
+
 endif
 
 dtstree		:= $(srctree)/$(src)
 dtb-$(CONFIG_OF_ALL_DTBS) := $(patsubst $(dtstree)/%.dts,%.dtb, $(wildcard $(dtstree)/*.dts))
 
-DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES))
-ifneq ($(DTB_NAMES),)
-DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
-else
-DTB_LIST := $(dtb-y)
-endif
-
-targets += dtbs dtbs_install
-targets += $(DTB_LIST)
-
-always		:= $(DTB_LIST)
+always		:= $(dtb-y)
+subdir-y	:= overlays
 clean-files	:= *.dtb
+
+# Enable fixups to support overlays on BCM2708 platforms
+ifeq ($(RPI_DT_OVERLAYS),y)
+	DTC_FLAGS ?= -@ -H epapr
+	dts-dirs += overlays
+endif

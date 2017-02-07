@@ -796,13 +796,14 @@ static inline void early_init_dt_check_for_initrd(unsigned long node)
 #endif /* CONFIG_BLK_DEV_INITRD */
 
 #ifdef CONFIG_SERIAL_EARLYCON
+extern struct of_device_id __earlycon_of_table[];
 
 static int __init early_init_dt_scan_chosen_serial(void)
 {
 	int offset;
-	const char *p, *q, *options = NULL;
+	const char *p;
 	int l;
-	const struct earlycon_id *match;
+	const struct of_device_id *match = __earlycon_of_table;
 	const void *fdt = initial_boot_params;
 
 	offset = fdt_path_offset(fdt, "/chosen");
@@ -817,26 +818,27 @@ static int __init early_init_dt_scan_chosen_serial(void)
 	if (!p || !l)
 		return -ENOENT;
 
-	q = strchrnul(p, ':');
-	if (*q != '\0')
-		options = q + 1;
-	l = q - p;
+	/* Remove console options if present */
+	l = strchrnul(p, ':') - p;
 
 	/* Get the node specified by stdout-path */
 	offset = fdt_path_offset_namelen(fdt, p, l);
-	if (offset < 0) {
-		pr_warn("earlycon: stdout-path %.*s not found\n", l, p);
-		return 0;
-	}
+	if (offset < 0)
+		return -ENODEV;
 
-	for (match = __earlycon_table; match < __earlycon_table_end; match++) {
-		if (!match->compatible[0])
+	while (match->compatible[0]) {
+		u64 addr;
+
+		if (fdt_node_check_compatible(fdt, offset, match->compatible)) {
+			match++;
 			continue;
+		}
 
-		if (fdt_node_check_compatible(fdt, offset, match->compatible))
-			continue;
+		addr = fdt_translate_address(fdt, offset);
+		if (addr == OF_BAD_ADDR)
+			return -ENXIO;
 
-		of_setup_earlycon(match, offset, options);
+		of_setup_earlycon(addr, match->data);
 		return 0;
 	}
 	return -ENODEV;
@@ -936,66 +938,55 @@ int __init early_init_dt_scan_memory(unsigned long node, const char *uname,
 	return 0;
 }
 
-/*
- * Convert configs to something easy to use in C code
- */
-#if defined(CONFIG_CMDLINE_FORCE)
-static const int overwrite_incoming_cmdline = 1;
-static const int read_dt_cmdline;
-static const int concat_cmdline;
-#elif defined(CONFIG_CMDLINE_EXTEND)
-static const int overwrite_incoming_cmdline;
-static const int read_dt_cmdline = 1;
-static const int concat_cmdline = 1;
-#else /* CMDLINE_FROM_BOOTLOADER */
-static const int overwrite_incoming_cmdline;
-static const int read_dt_cmdline = 1;
-static const int concat_cmdline;
-#endif
-
-#ifdef CONFIG_CMDLINE
-static const char *config_cmdline = CONFIG_CMDLINE;
-#else
-static const char *config_cmdline = "";
-#endif
-
 int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 				     int depth, void *data)
 {
-	int l = 0;
-	const char *p = NULL;
-	char *cmdline = data;
+	int l;
+	const char *p;
 
 	pr_debug("search \"chosen\", depth: %d, uname: %s\n", depth, uname);
 
-	if (depth != 1 || !cmdline ||
+	if (depth != 1 || !data ||
 	    (strcmp(uname, "chosen") != 0 && strcmp(uname, "chosen@0") != 0))
 		return 0;
 
 	early_init_dt_check_for_initrd(node);
 
-	/* Put CONFIG_CMDLINE in if forced or if data had nothing in it to start */
-	if (overwrite_incoming_cmdline || !cmdline[0])
-		strlcpy(cmdline, config_cmdline, COMMAND_LINE_SIZE);
+	/* Retrieve command line */
+	p = of_get_flat_dt_prop(node, "bootargs", &l);
 
-	/* Retrieve command line unless forcing */
-	if (read_dt_cmdline)
-		p = of_get_flat_dt_prop(node, "bootargs", &l);
+	/*
+	 * CONFIG_CMDLINE is meant to be a default in case nothing else
+	 * managed to set the command line, unless CONFIG_CMDLINE_FORCE
+	 * is set in which case we override whatever was found earlier.
+	 *
+	 * However, it can be useful to be able to treat the default as
+	 * a starting point to be extended using CONFIG_CMDLINE_EXTEND.
+	 */
+	((char *)data)[0] = '\0';
 
-	if (p != NULL && l > 0) {
-		if (concat_cmdline) {
-			int cmdline_len;
-			int copy_len;
-			strlcat(cmdline, " ", COMMAND_LINE_SIZE);
-			cmdline_len = strlen(cmdline);
-			copy_len = COMMAND_LINE_SIZE - cmdline_len - 1;
-			copy_len = min((int)l, copy_len);
-			strncpy(cmdline + cmdline_len, p, copy_len);
-			cmdline[cmdline_len + copy_len] = '\0';
-		} else {
-			strlcpy(cmdline, p, min((int)l, COMMAND_LINE_SIZE));
+#ifdef CONFIG_CMDLINE
+	strlcpy(data, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
+
+	if (p != NULL && l > 0)	{
+#if defined(CONFIG_CMDLINE_EXTEND)
+		int len = strlen(data);
+		if (len > 0) {
+			strlcat(data, " ", COMMAND_LINE_SIZE);
+			len++;
 		}
+		strlcpy((char *)data + len, p, min((int)l, COMMAND_LINE_SIZE - len));
+#elif defined(CONFIG_CMDLINE_FORCE)
+		pr_warning("Ignoring bootargs property (using the default kernel command line)\n");
+#else
+		/* Neither extend nor force - just override */
+		strlcpy(data, p, min((int)l, COMMAND_LINE_SIZE));
+#endif
 	}
+#else /* CONFIG_CMDLINE */
+	if (p != NULL && l > 0)
+		strlcpy(data, p, min((int)l, COMMAND_LINE_SIZE));
+#endif /* CONFIG_CMDLINE */
 
 	pr_debug("Command line is: %s\n", (char*)data);
 
