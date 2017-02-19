@@ -40,7 +40,7 @@ struct pr_ops;
 struct rq_wb;
 
 #define BLKDEV_MIN_RQ	4
-#define BLKDEV_MAX_RQ	128	/* Default maximum */
+#define BLKDEV_MAX_RQ	16	/* Default maximum */
 
 /*
  * Maximum number of blkcg policies allowed to be registered concurrently.
