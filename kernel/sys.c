@@ -1159,7 +1159,7 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 	return errno;
 }
 
-#ifdef __ARCH_WANT_SYS_OLD_UNAME
+#if defined(__ARCH_WANT_SYS_OLD_UNAME) && defined(CONFIG_OBSOLETE_SYSCALLS)
 /*
  * Old cruft
  */
@@ -1215,7 +1215,7 @@ SYSCALL_DEFINE1(olduname, struct oldold_utsname __user *, name)
 		error = -EFAULT;
 	return error ? -EFAULT : 0;
 }
-#endif
+#endif /* __ARCH_WANT_SYS_OLD_UNAME && CONFIG_OBSOLETE_SYSCALLS */
 
 SYSCALL_DEFINE2(sethostname, char __user *, name, int, len)
 {
